@@ -1,30 +1,39 @@
 //! The conformance set of SpelaionDB's plugin protocol, run against this plugin's own program
-//! (ADR-042): it starts, speaks the protocol's version, opens sessions, returns results in the
-//! order the contract says, fails without hanging, obeys a cancel while a statement runs and
-//! ends when its input closes. What the engine's types look like is the engine's own tests.
+//! (ADR-042), with requests (ADR-056): it starts, speaks the protocol's version, opens
+//! sessions, returns results in the order the contract says, fails without hanging and ends
+//! when its input closes. What the engine's values look like is `tests/neo4j.rs`. It needs
+//! `SPELAION_TEST_NEO4J` (`ci/services.sh`); without it the test is skipped, saying so.
 
-use spelaion_driver_api::ConnectParams;
-use spelaion_plugin_host::conformance::{Target, assert_conforms};
+use serde_json::json;
+use spelaion_driver_api::{ConnectParams, Secret};
+use spelaion_plugin_host::conformance::{RequestTarget, assert_conforms_requests};
 
-const PROGRAM: &str = env!("CARGO_BIN_EXE_spelaiondb-plugin-example");
+const PROGRAM: &str = env!("CARGO_BIN_EXE_spelaiondb-plugin-neo4j");
 
 #[tokio::test]
 async fn the_plugin_conforms() {
-    let target = Target {
+    let Ok(addr) = std::env::var("SPELAION_TEST_NEO4J") else {
+        eprintln!("SPELAION_TEST_NEO4J not set: test skipped");
+        return;
+    };
+    let (host, port) = addr.rsplit_once(':').expect("host:port");
+    let target = RequestTarget {
         program: PROGRAM.into(),
-        engine: "example".into(),
-        // A plugin of a server reads where it is from the environment, as SpelaionDB's own
-        // tests do, and skips this test (saying so) when it is not set.
+        engine: "neo4j".into(),
         params: ConnectParams {
-            database: "main".into(),
+            host: host.into(),
+            port: port.parse().expect("port"),
+            user: "neo4j".into(),
+            password: Some(Secret::new("spelaion-test")),
+            tls: spelaion_driver_api::TlsMode::Disable,
             ..Default::default()
         },
-        one_row: "select 1".into(),
-        refused: "select * from a_table_that_is_not_there".into(),
-        // A statement that runs until it is cancelled; `None` for an engine that cannot cancel.
-        slow: Some("wait".into()),
+        one_row: json!({"database": "neo4j", "statement": "RETURN 1 AS n"}),
+        refused: json!({"database": "neo4j", "statement": "RETRUN 1"}),
+        // Statements cannot be cancelled through the Query API.
+        slow: None,
     };
-    assert_conforms(&target).await;
+    assert_conforms_requests(&target).await;
 }
 
 /// `plugin.toml` is what SpelaionDB's pin says of this plugin: it must be what the program
@@ -48,7 +57,6 @@ async fn the_manifest_is_what_the_program_says() {
     assert_eq!(value("engines"), format!("[{}]", engines.join(", ")));
     assert_eq!(info.plugin.name, env!("CARGO_PKG_NAME"));
     assert_eq!(info.plugin.version, env!("CARGO_PKG_VERSION"));
-    // Three numbers, as SpelaionDB's `plugins.toml` wants.
     let min_app = value("min_app");
     let numbers = min_app.trim_matches('"').split('.').count();
     assert_eq!(numbers, 3, "min_app = {min_app}");
